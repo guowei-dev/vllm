@@ -1379,6 +1379,56 @@ class Scheduler(SchedulerInterface):
         if self.defer_block_free and total_num_scheduled_tokens > 0:
             self.sched_step_seq += 1
 
+        if total_num_scheduled_tokens > 0:
+            num_prefill_sched = sum(
+                num_scheduled_tokens.get(req.req_id, 0)
+                for req in scheduler_output.scheduled_new_reqs
+            )
+            cached_reqs = scheduler_output.scheduled_cached_reqs
+            if cached_reqs is not None and hasattr(cached_reqs, "req_ids"):
+                for req_id in cached_reqs.req_ids:
+                    n = num_scheduled_tokens.get(req_id, 0)
+                    if n > 1:
+                        num_prefill_sched += n
+            num_cached = cached_reqs.num_reqs if (cached_reqs is not None and hasattr(cached_reqs, "num_reqs")) else 0
+            num_decode_sched = total_num_scheduled_tokens - num_prefill_sched
+            if num_prefill_sched > 0:
+                kv_usage = (
+                    (self.kv_cache_manager.num_allocated_blocks / self.kv_cache_manager.total_num_blocks * 100.0)
+                    if hasattr(self, "kv_cache_manager") and hasattr(self.kv_cache_manager, "total_num_blocks") and self.kv_cache_manager.total_num_blocks > 0
+                    else 0.0
+                )
+                logger.info(
+                    "[vLLM Scheduler] Step: %d prefill tokens, %d decode tokens, %d total scheduled tokens "
+                    "(new_reqs=%d, cached_reqs=%d, waiting_reqs=%d, running_reqs=%d, kv_cache_usage=%.1f%%)",
+                    num_prefill_sched,
+                    num_decode_sched,
+                    total_num_scheduled_tokens,
+                    len(scheduler_output.scheduled_new_reqs),
+                    num_cached,
+                    len(self.waiting),
+                    len(self.running),
+                    kv_usage,
+                )
+                try:
+                    from vllm_torchtpu.tracing.annotation import TraceAnnotation
+                    with TraceAnnotation(
+                        name="vLLM_SchedulerPrefill",
+                        num_prefill=num_prefill_sched,
+                        num_decode=num_decode_sched,
+                        total_scheduled=total_num_scheduled_tokens,
+                        waiting_reqs=len(self.waiting),
+                        running_reqs=len(self.running),
+                        emit_cdk_trace=True,
+                    ):
+                        pass
+                except Exception:
+                    pass
+                with record_function_or_nullcontext(
+                    f"vLLM_SchedulerPrefill#num_prefill={num_prefill_sched},total={total_num_scheduled_tokens}#"
+                ):
+                    pass
+
         with record_function_or_nullcontext("schedule: update_after_schedule"):
             self._update_after_schedule(scheduler_output)
         return scheduler_output

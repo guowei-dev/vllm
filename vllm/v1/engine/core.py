@@ -606,6 +606,46 @@ class EngineCore:
         if not self.scheduler.has_requests():
             return {}, False
         scheduler_output = self.scheduler.schedule(self._should_throttle_prefills())
+        if scheduler_output.total_num_scheduled_tokens > 0:
+            num_prefill = sum(
+                scheduler_output.num_scheduled_tokens.get(req.req_id, 0)
+                for req in scheduler_output.scheduled_new_reqs
+            )
+            cached_reqs = scheduler_output.scheduled_cached_reqs
+            if cached_reqs is not None and hasattr(cached_reqs, "req_ids"):
+                for req_id in cached_reqs.req_ids:
+                    n = scheduler_output.num_scheduled_tokens.get(req_id, 0)
+                    if n > 1:
+                        num_prefill += n
+            num_cached = cached_reqs.num_reqs if (cached_reqs is not None and hasattr(cached_reqs, "num_reqs")) else 0
+            num_decode = scheduler_output.total_num_scheduled_tokens - num_prefill
+            if num_prefill > 0:
+                logger.info(
+                    "[EngineCore] Step: %d prefill tokens, %d decode tokens, %d total scheduled tokens (new_reqs=%d, cached_reqs=%d)",
+                    num_prefill,
+                    num_decode,
+                    scheduler_output.total_num_scheduled_tokens,
+                    len(scheduler_output.scheduled_new_reqs),
+                    num_cached,
+                )
+                try:
+                    from vllm_torchtpu.tracing.annotation import TraceAnnotation
+                    with TraceAnnotation(
+                        name="EngineCorePrefill",
+                        num_prefill=num_prefill,
+                        num_decode=num_decode,
+                        total_scheduled=scheduler_output.total_num_scheduled_tokens,
+                        new_reqs=len(scheduler_output.scheduled_new_reqs),
+                        cached_reqs=num_cached,
+                        emit_cdk_trace=True,
+                    ):
+                        pass
+                except Exception:
+                    pass
+                with record_function_or_nullcontext(
+                    f"EngineCorePrefill#num_prefill={num_prefill},num_decode={num_decode},total={scheduler_output.total_num_scheduled_tokens}#"
+                ):
+                    pass
         future = self.model_executor.execute_model(scheduler_output, non_block=True)
         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
         with (

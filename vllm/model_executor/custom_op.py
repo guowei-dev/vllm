@@ -162,9 +162,11 @@ class CustomOp(nn.Module):
 
     def forward_tpu(self, *args, **kwargs):
         # By default, we assume that TPU ops are compatible with the
-        # PyTorch-native implementation.
-        # NOTE(woosuk): This is a placeholder for future extensions.
+        # PyTorch-native implementation, or forward_oot if implemented by an OOT plugin.
+        if getattr(type(self), "forward_oot", None) is not CustomOp.forward_oot and hasattr(self, "forward_oot"):
+            return self.forward_oot(*args, **kwargs)
         return self.forward_native(*args, **kwargs)
+
 
     def forward_oot(self, *args, **kwargs):
         # By default, we assume that OOT ops are compatible with the
